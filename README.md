@@ -1,204 +1,278 @@
+# 🎟️ Foundry Smart Contract Lottery
 
-> ! Updates from Video
-> 1. V2.5 of Chainlink VRF uses a `uint256` as a subId instead of a `uint64` this repo has a comment to reflect that. We added a mock in case you'd like to work with version 2.5.
-> 2. We use `0.1.0` of the `foundry-devops` package which doesn't need to have `ffi=true`
+A provably fair, fully decentralized lottery (raffle) built with [Foundry](https://book.getfoundry.sh/). Players enter by paying a ticket fee, and after a set interval a winner is picked **automatically** and **verifiably at random** using [Chainlink VRF](https://docs.chain.link/vrf) and [Chainlink Automation](https://docs.chain.link/chainlink-automation). The winner receives the entire prize pool, with no human intervention.
 
-# Foundry Smart Contract Lottery
+[![Solidity](https://img.shields.io/badge/Solidity-%5E0.8.19-363636.svg)](https://soliditylang.org)
+[![Foundry](https://img.shields.io/badge/Built%20with-Foundry-orange.svg)](https://book.getfoundry.sh)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-This is a section of the Cyfrin Foundry Solidity Course.
+---
 
-*[⭐️ (3:04:09) | Lesson 9: Foundry Smart Contract Lottery](https://www.youtube.com/watch?v=sas02qSFZ74&t=11049s)*
+## Table of Contents
 
-- [Foundry Smart Contract Lottery](#foundry-smart-contract-lottery)
+- [About](#about)
+- [How It Works](#how-it-works)
+- [Features](#features)
+- [Project Structure](#project-structure)
 - [Getting Started](#getting-started)
-  - [Requirements](#requirements)
-  - [Quickstart](#quickstart)
-    - [Optional Gitpod](#optional-gitpod)
 - [Usage](#usage)
-  - [Start a local node](#start-a-local-node)
-  - [Library](#library)
-  - [Deploy](#deploy)
-  - [Deploy - Other Network](#deploy---other-network)
-  - [Testing](#testing)
-    - [Test Coverage](#test-coverage)
-- [Deployment to a testnet or mainnet](#deployment-to-a-testnet-or-mainnet)
-  - [Scripts](#scripts)
-  - [Estimate gas](#estimate-gas)
-- [Formatting](#formatting)
-- [Additional Info:](#additional-info)
-  - [Let's talk about what "Official" means](#lets-talk-about-what-official-means)
-  - [Summary](#summary)
-- [Thank you!](#thank-you)
+- [Testing](#testing)
+- [Deployment](#deployment)
+- [Chainlink Setup](#chainlink-setup)
+- [Security Considerations](#security-considerations)
+- [Contributing](#contributing)
+- [License](#license)
 
-# Getting Started
+---
 
-## Requirements
+## About
 
-- [git](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git)
-  - You'll know you did it right if you can run `git --version` and you see a response like `git version x.x.x`
-- [foundry](https://getfoundry.sh/)
-  - You'll know you did it right if you can run `forge --version` and you see a response like `forge 0.2.0 (816e00b 2023-03-16T00:05:26.396218Z)`
+Traditional lotteries rely on a trusted operator to run the draw and pay out. This project removes that trust requirement:
 
-## Quickstart
+1. **Entry** is open to anyone who pays the ticket price.
+2. **Winner selection** uses Chainlink VRF, so randomness is verifiable on-chain and cannot be manipulated by miners, validators, or the contract owner.
+3. **Automation** is handled by Chainlink Automation, which triggers the draw once the time interval has passed.
+
+## How It Works
 
 ```
-git clone https://github.com/Cyfrin/foundry-smart-contract-lottery-cu
-cd foundry-smart-contract-lottery-cu
+        ┌───────────────┐
+        │  Players call │
+        │  enterRaffle()│──── pay entrance fee ───┐
+        └───────────────┘                         │
+                                                  ▼
+                                        ┌──────────────────┐
+                                        │  Raffle (OPEN)   │
+                                        └────────┬─────────┘
+                                                 │ interval elapsed,
+                                                 │ players > 0, balance > 0
+                                                 ▼
+                                    ┌─────────────────────────┐
+                                    │ Chainlink Automation    │
+                                    │ checkUpkeep → performUpkeep │
+                                    └────────────┬────────────┘
+                                                 │ state = CALCULATING
+                                                 ▼
+                                    ┌─────────────────────────┐
+                                    │ Chainlink VRF           │
+                                    │ requestRandomWords      │
+                                    └────────────┬────────────┘
+                                                 │ callback
+                                                 ▼
+                                    ┌─────────────────────────┐
+                                    │ fulfillRandomWords      │
+                                    │ pick winner → pay out   │
+                                    │ reset players, state=OPEN │
+                                    └─────────────────────────┘
+```
+
+**Upkeep conditions** (`checkUpkeep` returns `true` when all hold):
+
+- The time interval has passed since the last draw
+- The raffle is in the `OPEN` state
+- The contract has a balance (and therefore at least one player)
+- The subscription is funded with LINK
+
+## Features
+
+- 🎲 Verifiable randomness via Chainlink VRF
+- ⏱️ Automated draws via Chainlink Automation
+- 🏆 Winner takes the full prize pool
+- 🔒 Raffle state machine (`OPEN` / `CALCULATING`) prevents entries during a draw
+- 📢 Events emitted for entry, winner request, and winner pick
+- 🧪 Unit, integration, and fork tests
+- 🛠️ Network-aware deploy scripts (local Anvil, Sepolia, and more)
+- ⛽ Custom errors and `immutable` / `constant` variables for gas efficiency
+
+## Project Structure
+
+```
+.
+├── src/
+│   └── Raffle.sol              # Main lottery contract
+├── script/
+│   ├── DeployRaffle.s.sol      # Deployment script
+│   ├── HelperConfig.s.sol      # Per-network configuration
+│   └── Interactions.s.sol      # Create subscription, fund, add consumer
+├── test/
+│   ├── unit/
+│   │   └── RaffleTest.t.sol    # Unit tests
+│   ├── integration/
+│   │   └── Interactions.t.sol  # Script/integration tests
+│   └── mocks/
+│       └── LinkToken.sol       # Mock LINK token for local testing
+├── lib/                        # Dependencies (forge-std, chainlink, solmate)
+├── foundry.toml                # Foundry configuration
+├── Makefile                    # Handy command shortcuts
+├── .env.example                # Environment variable template
+└── README.md
+```
+
+> Adjust the tree above to match your actual layout.
+
+## Getting Started
+
+### Prerequisites
+
+- [Git](https://git-scm.com/)
+- [Foundry](https://book.getfoundry.sh/getting-started/installation)
+
+Verify your install:
+
+```bash
+forge --version
+```
+
+### Installation
+
+```bash
+git clone https://github.com/<your-username>/foundry-smart-contract-lottery.git
+cd foundry-smart-contract-lottery
+forge install
 forge build
 ```
 
-### Optional Gitpod
+### Environment Variables
 
-If you can't or don't want to run and install locally, you can work with this repo in Gitpod. If you do this, you can skip the `clone this repo` part.
+Copy the template and fill in your values:
 
-[![Open in Gitpod](https://gitpod.io/button/open-in-gitpod.svg)](https://gitpod.io/#github.com/Cyfrin/foundry-smart-contract-lottery-cu)
-
-# Usage
-
-## Start a local node
-
-```
-make anvil
+```bash
+cp .env.example .env
 ```
 
-## Library
-
-If you're having a hard time installing the chainlink library, you can optionally run this command. 
-
-```
-forge install smartcontractkit/chainlink-brownie-contracts@0.6.1
+```env
+SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<YOUR_KEY>
+PRIVATE_KEY=<DEPLOYER_PRIVATE_KEY>   # use a throwaway/test wallet only
+ETHERSCAN_API_KEY=<YOUR_ETHERSCAN_KEY>
 ```
 
-## Deploy
+> ⚠️ **Never commit your `.env` file or use a wallet that holds real funds for testing.** For better security, use Foundry's encrypted keystore (`cast wallet import`) instead of a raw private key.
 
-This will default to your local node. You need to have it running in another terminal in order for it to deploy.
+## Usage
 
+### Start a local node
+
+```bash
+anvil
 ```
-make deploy
+
+### Deploy locally
+
+```bash
+forge script script/DeployRaffle.s.sol:DeployRaffle \
+  --rpc-url http://127.0.0.1:8545 \
+  --private-key <ANVIL_PRIVATE_KEY> \
+  --broadcast
 ```
 
-## Deploy - Other Network
+### Enter the raffle
 
-[See below](#deployment-to-a-testnet-or-mainnet)
+```bash
+cast send <RAFFLE_ADDRESS> "enterRaffle()" \
+  --value 0.01ether \
+  --rpc-url <RPC_URL> \
+  --private-key <PRIVATE_KEY>
+```
+
+### Read contract state
+
+```bash
+cast call <RAFFLE_ADDRESS> "getEntranceFee()(uint256)" --rpc-url <RPC_URL>
+cast call <RAFFLE_ADDRESS> "getRecentWinner()(address)" --rpc-url <RPC_URL>
+cast call <RAFFLE_ADDRESS> "getNumberOfPlayers()(uint256)" --rpc-url <RPC_URL>
+```
 
 ## Testing
 
-We talk about 4 test tiers in the video.
+Run the full suite:
 
-1. Unit
-2. Integration
-3. Forked
-4. Staging
-
-This repo we cover #1 and #3.
-
-```
+```bash
 forge test
 ```
 
-or
+Useful variations:
 
-```
-forge test --fork-url $SEPOLIA_RPC_URL
-```
-
-### Test Coverage
-
-```
-forge coverage
+```bash
+forge test -vvvv                         # verbose traces
+forge test --match-test testName         # single test
+forge test --fork-url $SEPOLIA_RPC_URL   # fork tests against Sepolia
+forge coverage                           # coverage report
+forge snapshot                           # gas snapshot
 ```
 
-# Deployment to a testnet or mainnet
+Tests cover:
 
-1. Setup environment variables
+- Initialization in the `OPEN` state
+- Entry fee validation and player recording
+- Event emission
+- Blocking entries while `CALCULATING`
+- `checkUpkeep` true/false conditions
+- `performUpkeep` only running when upkeep is needed
+- `fulfillRandomWords` only callable after a request, and by the VRF coordinator
+- End-to-end winner selection, payout, and state reset
 
-You'll want to set your `SEPOLIA_RPC_URL` and `PRIVATE_KEY` as environment variables. You can add them to a `.env` file, similar to what you see in `.env.example`.
+## Deployment
 
-- `PRIVATE_KEY`: The private key of your account (like from [metamask](https://metamask.io/)). **NOTE:** FOR DEVELOPMENT, PLEASE USE A KEY THAT DOESN'T HAVE ANY REAL FUNDS ASSOCIATED WITH IT.
-  - You can [learn how to export it here](https://metamask.zendesk.com/hc/en-us/articles/360015289632-How-to-Export-an-Account-Private-Key).
-- `SEPOLIA_RPC_URL`: This is url of the sepolia testnet node you're working with. You can get setup with one for free from [Alchemy](https://alchemy.com/?a=673c802981)
+### Sepolia testnet
 
-Optionally, add your `ETHERSCAN_API_KEY` if you want to verify your contract on [Etherscan](https://etherscan.io/).
+```bash
+source .env
 
-1. Get testnet ETH
-
-Head over to [faucets.chain.link](https://faucets.chain.link/) and get some testnet ETH. You should see the ETH show up in your metamask.
-
-2. Deploy
-
-```
-make deploy ARGS="--network sepolia"
-```
-
-This will setup a ChainlinkVRF Subscription for you. If you already have one, update it in the `scripts/HelperConfig.s.sol` file. It will also automatically add your contract as a consumer.
-
-3. Register a Chainlink Automation Upkeep
-
-[You can follow the documentation if you get lost.](https://docs.chain.link/chainlink-automation/compatible-contracts)
-
-Go to [automation.chain.link](https://automation.chain.link/new) and register a new upkeep. Choose `Custom logic` as your trigger mechanism for automation. Your UI will look something like this once completed:
-
-![Automation](./img/automation.png)
-
-## Scripts
-
-After deploying to a testnet or local net, you can run the scripts.
-
-Using cast deployed locally example:
-
-```
-cast send <RAFFLE_CONTRACT_ADDRESS> "enterRaffle()" --value 0.1ether --private-key <PRIVATE_KEY> --rpc-url $SEPOLIA_RPC_URL
+forge script script/DeployRaffle.s.sol:DeployRaffle \
+  --rpc-url $SEPOLIA_RPC_URL \
+  --account <KEYSTORE_ACCOUNT_NAME> \
+  --broadcast \
+  --verify \
+  --etherscan-api-key $ETHERSCAN_API_KEY \
+  -vvvv
 ```
 
-or, to create a ChainlinkVRF Subscription:
+Or use the Makefile shortcut:
 
-```
-make createSubscription ARGS="--network sepolia"
-```
-
-## Estimate gas
-
-You can estimate how much gas things cost by running:
-
-```
-forge snapshot
+```bash
+make deploy-sepolia
 ```
 
-And you'll see an output file called `.gas-snapshot`
+## Chainlink Setup
 
-# Formatting
+For live networks, after deploying:
 
-To run code formatting:
+1. **VRF subscription:** Create a subscription at [vrf.chain.link](https://vrf.chain.link) and fund it with LINK (the deploy scripts can automate this).
+2. **Add consumer:** Add the deployed Raffle contract address as a consumer of the subscription.
+3. **Automation upkeep:** Register a custom-logic upkeep at [automation.chain.link](https://automation.chain.link) pointing to your Raffle contract and fund it with LINK.
 
-```
-forge fmt
-```
+On local Anvil, the scripts deploy a `VRFCoordinatorV2Mock` and `LinkToken` mock, so no setup is required.
 
-# Additional Info:
-Some users were having a confusion that whether Chainlink-brownie-contracts is an official Chainlink repository or not. Here is the info.
-Chainlink-brownie-contracts is an official repo. The repository is owned and maintained by the chainlink team for this very purpose, and gets releases from the proper chainlink release process. You can see it's still the `smartcontractkit` org as well.
+## Security Considerations
 
-https://github.com/smartcontractkit/chainlink-brownie-contracts
+- Randomness comes from Chainlink VRF, **never** from `block.timestamp`, `blockhash`, or `prevrandao`.
+- The contract follows **Checks-Effects-Interactions**: state is reset before the winner is paid.
+- Winner payout uses a low-level `call` and reverts on failure.
+- Access to `fulfillRandomWords` is restricted to the VRF coordinator.
+- State machine blocks new entries while a draw is in progress.
+- **This project has not been audited.** Do not deploy to mainnet with real funds without a professional audit.
+- Be aware of the legal and regulatory requirements for lotteries and gambling in your jurisdiction.
 
-## Let's talk about what "Official" means
-The "official" release process is that chainlink deploys it's packages to [npm](https://www.npmjs.com/package/@chainlink/contracts). So technically, even downloading directly from `smartcontractkit/chainlink` is wrong, because it could be using unreleased code.
+## Contributing
 
-So, then you have two options:
+Contributions are welcome!
 
-1. Download from NPM and have your codebase have dependencies foreign to foundry
-2. Download from the chainlink-brownie-contracts repo which already downloads from npm and then packages it nicely for you to use in foundry.
-## Summary
-1. That is an official repo maintained by the same org
-2. It downloads from the official release cycle `chainlink/contracts` use (npm) and packages it nicely for digestion from foundry.
+1. Fork the repo
+2. Create a feature branch (`git checkout -b feature/my-feature`)
+3. Run `forge fmt` and `forge test`
+4. Commit your changes and open a pull request
 
+## License
 
-# Thank you!
+This project is licensed under the [MIT License](LICENSE).
 
-If you appreciated this, feel free to follow me or donate!
+## Acknowledgements
 
-ETH/Arbitrum/Optimism/Polygon/etc Address: 0x9680201d9c93d65a3603d2088d125e955c73BD65
+- [Foundry](https://github.com/foundry-rs/foundry)
+- [Chainlink](https://chain.link)
+- [Cyfrin Updraft](https://updraft.cyfrin.io) for the Foundry curriculum this style of project is based on
+- [Solmate](https://github.com/transmissions11/solmate)
 
-[![Patrick Collins Twitter](https://img.shields.io/badge/Twitter-1DA1F2?style=for-the-badge&logo=twitter&logoColor=white)](https://twitter.com/PatrickAlphaC)
-[![Patrick Collins YouTube](https://img.shields.io/badge/YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/channel/UCn-3f8tw_E1jZvhuHatROwA)
-[![Patrick Collins Linkedin](https://img.shields.io/badge/LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/patrickalphac/)
-[![Patrick Collins Medium](https://img.shields.io/badge/Medium-000000?style=for-the-badge&logo=medium&logoColor=white)](https://medium.com/@patrick.collins_58673/)
+---
+
+**Author:** [@<keztena>](https://github.com/keztena)

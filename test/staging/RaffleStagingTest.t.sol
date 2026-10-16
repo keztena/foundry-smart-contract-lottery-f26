@@ -5,14 +5,15 @@ pragma solidity ^0.8.19;
 import {DeployRaffle} from "../../script/DeployRaffle.s.sol";
 import {Raffle} from "../../src/Raffle.sol";
 import {HelperConfig} from "../../script/HelperConfig.s.sol";
-import {Test, console} from "forge-std/Test.sol";
-import {Vm} from "forge-std/Vm.sol";
-import {StdCheats} from "forge-std/StdCheats.sol";
-import {VRFCoordinatorV2_5Mock} from "@chainlink/contracts/src/v0.8/vrf/mocks/VRFCoordinatorV2_5Mock.sol";
-import {CreateSubscription} from "../../script/Interactions.s.sol";
+import {Test} from "../../lib/forge-std/src/Test.sol";
+import {Vm} from "../../lib/forge-std/src/Vm.sol";
+import {
+    VRFCoordinatorV2_5Mock
+} from "../../lib/chainlink-brownie-contracts/contracts/src/v0.8/vrf/mocks/VRFCoordinatorV2_5Mock.sol";
 
-contract RaffleTest is StdCheats, Test {
-    /* Errors */
+// `Test` already inherits StdCheats, so it doesn't need to be listed separately.
+contract RaffleTest is Test {
+    /* Events */
     event RequestedRaffleWinner(uint256 indexed requestId);
     event RaffleEnter(address indexed player);
     event WinnerPicked(address indexed player);
@@ -29,6 +30,10 @@ contract RaffleTest is StdCheats, Test {
 
     address public PLAYER = makeAddr("player");
     uint256 public constant STARTING_USER_BALANCE = 10 ether;
+
+    // Constants are inlined at compile time, so reading them costs no storage access.
+    uint256 private constant ADDITIONAL_ENTRANCES = 3;
+    uint256 private constant STARTING_INDEX = 1; // start at address(1), not address(0)
 
     function setUp() external {
         DeployRaffle deployer = new DeployRaffle();
@@ -68,14 +73,10 @@ contract RaffleTest is StdCheats, Test {
     }
 
     function testFulfillRandomWordsCanOnlyBeCalledAfterPerformUpkeep() public raffleEntered onlyOnDeployedContracts {
-        // Arrange
-        // Act / Assert
         vm.expectRevert("nonexistent request");
-        // vm.mockCall could be used here...
         VRFCoordinatorV2_5Mock(vrfCoordinatorV2_5).fulfillRandomWords(0, address(raffle));
 
         vm.expectRevert("nonexistent request");
-
         VRFCoordinatorV2_5Mock(vrfCoordinatorV2_5).fulfillRandomWords(1, address(raffle));
     }
 
@@ -83,13 +84,12 @@ contract RaffleTest is StdCheats, Test {
         address expectedWinner = address(1);
 
         // Arrange
-        uint256 additionalEntrances = 3;
-        uint256 startingIndex = 1; // We have starting index be 1 so we can start with address(1) and not address(0)
-
-        for (uint256 i = startingIndex; i < startingIndex + additionalEntrances; i++) {
-            address player = address(uint160(i));
-            hoax(player, 1 ether); // deal 1 eth to the player
+        for (uint256 i = STARTING_INDEX; i < STARTING_INDEX + ADDITIONAL_ENTRANCES;) {
+            hoax(address(uint160(i)), 1 ether); // deal 1 eth to the player
             raffle.enterRaffle{value: raffleEntranceFee}();
+            unchecked {
+                ++i; // can't overflow: bounded by the constants above
+            }
         }
 
         uint256 startingTimeStamp = raffle.getLastTimeStamp();
@@ -105,14 +105,11 @@ contract RaffleTest is StdCheats, Test {
 
         // Assert
         address recentWinner = raffle.getRecentWinner();
-        Raffle.RaffleState raffleState = raffle.getRaffleState();
-        uint256 winnerBalance = recentWinner.balance;
-        uint256 endingTimeStamp = raffle.getLastTimeStamp();
-        uint256 prize = raffleEntranceFee * (additionalEntrances + 1);
+        uint256 prize = raffleEntranceFee * (ADDITIONAL_ENTRANCES + 1);
 
         assert(recentWinner == expectedWinner);
-        assert(uint256(raffleState) == 0);
-        assert(winnerBalance == startingBalance + prize);
-        assert(endingTimeStamp > startingTimeStamp);
+        assert(raffle.getRaffleState() == Raffle.RaffleState.OPEN);
+        assert(recentWinner.balance == startingBalance + prize);
+        assert(raffle.getLastTimeStamp() > startingTimeStamp);
     }
 }
